@@ -120,3 +120,7 @@ venv.bak/
 *.iml
 *.sublime-project
 *.sublime-workspace
+
+# model and data
+*_data/
+*_model/
