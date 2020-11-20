@@ -5,6 +5,12 @@ import numpy as np
 import torch
 from torchvision import datasets, transforms
 
+import glob
+from zipfile import ZipFile
+
+import random
+from .celeba_dataset import CelebaDataset
+
 
 def load_datasets(dataset, image_size, data_path):
     if dataset == 'omniglot':
@@ -109,17 +115,66 @@ def load_imagenet(data_path, image_size):
 
 
 def load_celeba(data_path, image_size):
-    train_data = datasets.ImageFolder(os.path.join(data_path, 'train'),
-                                      transform=transforms.Compose([
-                                          transforms.Resize(image_size),
-                                          transforms.RandomHorizontalFlip(0.5),
-                                          transforms.ToTensor()
-                                      ]))
-    val_data = datasets.ImageFolder(os.path.join(data_path, 'val'),
-                                    transform=transforms.Compose([
-                                        transforms.Resize(image_size),
-                                        transforms.ToTensor()
-                                    ]))
+    image_file = os.path.join(data_path, 'img_align_celeba.zip')
+    attr_file = os.path.join(data_path, 'list_attr_celeba.txt')
+    direct_folder = os.path.join(data_path, 'img_align_celeba/')
+
+    with ZipFile(image_file, 'r') as z:
+        if os.path.isdir(direct_folder) == 0:
+            print('Extracting Celeb-A files now...')
+            z.extractall(data_path)
+            print('Done!')
+        else:
+            print('Celeb-A has already been extracted.')
+    
+    data_paths = sorted(glob.glob(direct_folder+'*.jpg'))
+
+    # here we only select first 10000
+    data_paths = data_paths[:10000]
+
+    print('The number of extraction is {}'.format(len(data_paths)))
+
+    label_list = open(attr_file).readlines()[2:]
+
+    data_label = []
+
+    for i in range(len(label_list)):
+        data_label.append(label_list[i].split())
+    
+    # transform label (1, -1) to (1, 0)
+    for m in range(len(data_label)):
+        data_label[m] = [n.replace('-1', '0') for n in data_label[m]][1:]
+        data_label[m] = [int(p) * 1.0 for p in data_label[m]]
+    
+    attributes = open(attr_file).readlines()[1].split()
+
+    # shuffle the index
+    indices = list(range(len(data_paths)))
+    random.shuffle(indices)
+    split_train = int(0.8 * len(data_paths))
+    train_idx, valid_idx = indices[:split_train], indices[split_train:]
+
+    train_data_paths = [data_paths[idx] for idx in train_idx]
+    train_labels = [data_label[idx] for idx in train_idx]
+
+    valid_data_paths = [data_paths[idx] for idx in valid_idx]
+    valid_labels = [data_label[idx] for idx in valid_idx]
+
+    # build up the dataset
+    train_data = CelebaDataset(
+        data_path=train_data_paths,
+        label_path=train_labels,
+        image_size=image_size,
+        split='train',
+    )
+
+    val_data = CelebaDataset(
+        data_path=valid_data_paths,
+        label_path=valid_labels,
+        image_size=image_size,
+        split='valid',
+    )
+
     return train_data, val_data
 
 
@@ -130,7 +185,11 @@ def get_batch(data, indices):
         img, label = data[index]
         imgs.append(img)
         labels.append(label)
-    return torch.stack(imgs, dim=0), torch.LongTensor(labels)
+
+    try:
+        return torch.stack(imgs, dim=0), torch.LongTensor(labels)
+    except:
+        return torch.stack(imgs, dim=0), torch.stack(labels, dim=0)
 
 
 def iterate_minibatches(data, indices, batch_size, shuffle):

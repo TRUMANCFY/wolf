@@ -314,6 +314,8 @@ def train(args, train_loader, train_index, train_sampler, val_loader, val_data, 
             torch.cuda.empty_cache()
         gc.collect()
         for step, (data, y) in enumerate(train_loader):
+            # print(data.shape)
+            # print(y.shape)
             if step <= last_step:
                 continue
             last_step = -1
@@ -330,8 +332,11 @@ def train(args, train_loader, train_index, train_sampler, val_loader, val_data, 
             # disable allreduce for accumulated gradient.
             if is_distributed(args.rank):
                 wolf.disable_allreduce()
+            cnt = 0
             for data, y in zip (data_list[:-1], y_list[:-1]):
+                # print('++')
                 loss_gen, loss_kl, loss_dequant = wolf.loss(data, y=y, n_bits=n_bits, nsamples=train_k)
+                # print('--')
                 loss_gen = loss_gen.sum()
                 loss_kl = loss_kl.sum()
                 loss_dequant = loss_dequant.sum()

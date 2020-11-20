@@ -95,7 +95,6 @@ class WolfCore(nn.Module):
         z = z.view(-1, z.size(2)) if z is not None else z
         # [batch]
         log_probs_gen = self.generator.log_probability(x, h=z).view(size[0], nsamples).mean(dim=1)
-
         loss_gen = log_probs_gen * -1.
         if kl is None:
             kl = loss_gen.new_zeros(loss_gen.size(0))
