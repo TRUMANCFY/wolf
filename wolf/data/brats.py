@@ -16,7 +16,9 @@ class BratsDataSet(Dataset):
         self.data = np.load(self.data_path)
         self.label = np.load(self.label_path)
         self.seg = np.load(self.seg_path)
-        self.seg = self.seg.astype(int)
+        self.seg = self.seg.astype('float32')
+        print('data: ', self.data.dtype)
+        print('seg: ', self.seg.dtype)
 
         assert self.data.shape[0] == self.label.shape[0] == self.seg.shape[0], 'The length of data, label and segmentation should be the same'
 
@@ -38,6 +40,7 @@ class BratsDataSet(Dataset):
     
     def __getitem__(self, idx):
         image_tensor = self.data[idx, :, :]
+        image_tensor = torch.stack([image_tensor, image_tensor])
         image_label = self.label[idx]
         seg_tensor = self.seg[idx, :, :]
 

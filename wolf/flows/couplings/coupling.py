@@ -228,6 +228,9 @@ class NICE2d(Flow):
 
         assert type in ['conv']
         if type == 'conv':
+            # print('coupling in_channels: ', in_channels)
+            # print('coupling out_channels: ', out_channels)
+            # print('coupling factor: ', factor)
             self.net = NICEConvBlock(in_channels, out_channels, hidden_channels, activation,
                                      normalize=normalize, num_groups=num_groups, h_type=h_type)
 
@@ -443,18 +446,10 @@ class NICE2d(Flow):
             # [batch, length, features]
             z, zp = (z1, z2) if self.up else (z2, z1)
 
-            print(self.h_net)
-
             if self.h_net is not None:
                 h = self.h_net(h, x=z)
             else:
                 h = None
-
-            
-            if self.h_type == 'global_attn':
-                print('the shape of z is ', z.shape)
-                print('the shape of h is ', h.shape)
-
 
             params = self.transform.calc_params(self.init_net(z, h=h, init_scale=init_scale))
             zp, logdet = self.transform.fwd(zp, params)

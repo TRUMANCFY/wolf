@@ -48,6 +48,8 @@ class Conv2dWeightNorm(nn.Module):
     def __init__(self, in_channels, out_channels, kernel_size, stride=1,
                  padding=0, dilation=1, groups=1, bias=True):
         super(Conv2dWeightNorm, self).__init__()
+        print('in_channels: ', in_channels)
+        print('out_channels: ', out_channels)
         self.conv = nn.Conv2d(in_channels, out_channels, kernel_size, stride=stride,
                               padding=padding, dilation=dilation, groups=groups, bias=bias)
         self.reset_parameters()
