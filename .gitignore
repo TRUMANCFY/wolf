@@ -124,3 +124,5 @@ venv.bak/
 # model and data
 *_data/
 *_model/
+BraTS/
+cifar_mask/
