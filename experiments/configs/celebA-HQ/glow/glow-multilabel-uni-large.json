@@ -1,0 +1,31 @@
+{
+    "generator": {
+      "flow": {
+        "type": "glow",
+        "levels": 4,
+        "num_steps": [2, [8, 8], [4, 4], 1],
+        "factors": [4, 4],
+        "in_channels": 3,
+        "hidden_channels": [24, 256, 256, 512],
+        "activation": "elu",
+        "h_channels": 256,
+        "h_type": "global_attn",
+        "inverse": true,
+        "transform": "affine",
+        "prior_transform": "affine",
+        "alpha": 1.0,
+        "coupling_type": "conv",
+        "num_groups": [2, 4, 4, 4]
+      }
+    },
+    "discriminator" : {
+      "type": "multilabel",
+      "num_events": 40,
+      "dim": 256,
+      "activation": "elu"
+    },
+    "dequantizer": {
+      "type": "uniform"
+    }
+  }
+  

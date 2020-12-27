@@ -1,5 +1,5 @@
 from overrides import overrides
-from typing import Tuple
+from typing import Tuple, List
 import torch
 import torch.nn as nn
 
@@ -44,6 +44,22 @@ class MultiScalePrior(Flow):
         out = unsplit2d([out1, out2])
         return out, logdet_accum
 
+
+    def forward_attn(self, input: torch.Tensor, h=None) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        attn = None
+        # conv1x1
+        out, logdet_accum = self.conv1x1.forward(input)
+        # coupling
+        out, logdet, attn = self.coupling.forward_attn(out, h=h)
+
+        logdet_accum = logdet_accum + logdet
+        # actnorm
+        out1, out2 = split2d(out, self.z1_channels)
+        out2, logdet = self.actnorm.forward(out2)
+        logdet_accum = logdet_accum + logdet
+        out = unsplit2d([out1, out2])
+        return out, logdet_accum, attn
+
     @overrides
     def backward(self, input: torch.Tensor, h=None) -> Tuple[torch.Tensor, torch.Tensor]:
         # actnorm
@@ -79,13 +95,33 @@ class MultiScaleExternal(Flow):
     """
     def __init__(self, flow_step, num_steps, in_channels, hidden_channels, h_channels,
                  transform='affine', alpha=1.0, inverse=False, kernel_size=(2, 3),
-                 coupling_type='conv', h_type=None, activation='relu', normalize=None, num_groups=None):
+                 coupling_type='conv', h_type=None, activation='relu', normalize=None, num_groups=None, is_bottom=False):
         super(MultiScaleExternal, self).__init__(inverse)
-        steps = [flow_step(in_channels, hidden_channels=hidden_channels, h_channels=h_channels,
-                           transform=transform, alpha=alpha, inverse=inverse, coupling_type=coupling_type,
-                           h_type=h_type, activation=activation, normalize=normalize, num_groups=num_groups,
-                           kernel_size=kernel_size)
-                 for _ in range(num_steps)]
+        if not is_bottom or h_type == None or h_type == 'global_attn':
+            steps = [flow_step(in_channels, hidden_channels=hidden_channels, h_channels=h_channels,
+                            transform=transform, alpha=alpha, inverse=inverse, coupling_type=coupling_type,
+                            h_type=h_type, activation=activation, normalize=normalize, num_groups=num_groups,
+                            kernel_size=kernel_size)
+                    for _ in range(num_steps)]
+        else:
+            steps = []
+            for idx in range(num_steps):
+                if idx == 0:
+                    # h_type="global_attn" + "#" + h_type
+                    # add global attention
+                    steps.append(
+                        flow_step(in_channels, hidden_channels=hidden_channels, h_channels=h_channels,
+                            transform=transform, alpha=alpha, inverse=inverse, coupling_type=coupling_type,
+                            h_type=h_type, activation=activation, normalize=normalize, num_groups=num_groups,
+                            kernel_size=kernel_size)
+                    )
+                else:
+                    steps.append(
+                        flow_step(in_channels, hidden_channels=hidden_channels, h_channels=h_channels,
+                            transform=transform, alpha=alpha, inverse=inverse, coupling_type=coupling_type,
+                            h_type=h_type, activation=activation, normalize=normalize, num_groups=num_groups,
+                            kernel_size=kernel_size)
+                    )
 
         self.steps = nn.ModuleList(steps)
 
@@ -103,6 +139,22 @@ class MultiScaleExternal(Flow):
             logdet_accum = logdet_accum + logdet
         return out, logdet_accum
 
+    
+    def forward_attn(self, input: torch.Tensor, h=None) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        attn = None
+        out = input
+        # [batch]
+        logdet_accum = input.new_zeros(input.size(0))
+        for idx, step in enumerate(self.steps):
+            if idx == 0:
+                out, logdet, attn = step.forward_attn(out, h=h)
+            else:
+                out, logdet = step.forward(out, h=h)
+            # attns.append(attn_list)
+            logdet_accum = logdet_accum + logdet
+        # attns = torch.cat(attns, dim=0)
+        return out, logdet_accum, attn
+
     @overrides
     def backward(self, input: torch.Tensor, h=None) -> Tuple[torch.Tensor, torch.Tensor]:
         logdet_accum = input.new_zeros(input.size(0))
@@ -111,6 +163,17 @@ class MultiScaleExternal(Flow):
             out, logdet = step.backward(out, h=h)
             logdet_accum = logdet_accum + logdet
         return out, logdet_accum
+
+    def backward_attn(self, input: torch.Tensor, h=None) -> Tuple[torch.Tensor, torch.Tensor]:
+        logdet_accum = input.new_zeros(input.size(0))
+        out = input
+        for i, step in enumerate(reversed(self.steps)):
+            if i < len(self.steps) - 1:
+                out, logdet = step.backward(out, h=h)
+            else:
+                out, logdet, attn = step.backward_attn(out, h=h)
+            logdet_accum = logdet_accum + logdet
+        return out, logdet_accum, attn
 
     @overrides
     def init(self, data, h=None, init_scale=1.0) -> Tuple[torch.Tensor, torch.Tensor]:
@@ -205,6 +268,7 @@ class MultiScaleInternal(Flow):
         assert len(outputs) == 0
         return out, logdet_accum
 
+
     @overrides
     def init(self, data, h=None, init_scale=1.0) -> Tuple[torch.Tensor, torch.Tensor]:
         out = data
@@ -260,7 +324,7 @@ class MultiScaleArchitecture(Flow):
                                            hidden_channels=hidden_channel, h_channels=h_channels,
                                            transform=transform, alpha=alpha, inverse=inverse,
                                            kernel_size=kernel_size, coupling_type=coupling_type, h_type=h_type,
-                                           activation=activation, normalize=normalize, num_groups=n_groups)
+                                           activation=activation, normalize=normalize, num_groups=n_groups, is_bottom=True)
                 blocks.append(block)
             elif level == levels - 1:
                 # top
@@ -298,7 +362,9 @@ class MultiScaleArchitecture(Flow):
         out = input
         outputs = []
         for i, block in enumerate(self.blocks):
+            # print('block {}, intput_out: shape: {}'.format(i, out.shape))
             out, logdet = block.forward(out, h=h)
+            # print('block {}, forward_out: shape: {}'.format(i, out.shape))
             logdet_accum = logdet_accum + logdet
             if i < self.levels - 1:
                 if i > 0:
@@ -306,8 +372,10 @@ class MultiScaleArchitecture(Flow):
                     out1, out2 = split2d(out, block.z_channels)
                     outputs.append(out2)
                     out = out1
+                    # print('block {}, split_out: shape: {}'.format(i, out.shape))
                 # squeeze when block is not top
                 out = squeeze2d(out, factor=2)
+                # print('block {}, squeeze_out: shape: {}'.format(i, out.shape))
                 if self.squeeze_h:
                     h = squeeze2d(h, factor=2)
 
@@ -317,6 +385,41 @@ class MultiScaleArchitecture(Flow):
             out = unsqueeze2d(unsplit2d([out, out2]), factor=2)
         assert len(outputs) == 0
         return out, logdet_accum
+
+    
+    def forward_attn(self, input: torch.Tensor, h=None) -> Tuple[torch.Tensor, torch.Tensor, List[torch.Tensor]]:
+        logdet_accum = input.new_zeros(input.size(0))
+        out = input
+        outputs = []
+        attns = None
+        for i, block in enumerate(self.blocks):
+            # print('block {}, intput_out: shape: {}'.format(i, out.shape))
+            if i == 0:
+                out, logdet, attns = block.forward_attn(out, h=h)
+            else:
+                out, logdet = block.forward(out, h=h)
+            # print('block {}, forward_out: shape: {}'.format(i, out.shape))
+            logdet_accum = logdet_accum + logdet
+            if i < self.levels - 1:
+                if i > 0:
+                    # split when block is not bottom or top
+                    out1, out2 = split2d(out, block.z_channels)
+                    outputs.append(out2)
+                    out = out1
+                    # print('block {}, split_out: shape: {}'.format(i, out.shape))
+                # squeeze when block is not top
+                out = squeeze2d(out, factor=2)
+                # print('block {}, squeeze_out: shape: {}'.format(i, out.shape))
+                if self.squeeze_h:
+                    h = squeeze2d(h, factor=2)
+
+        out = unsqueeze2d(out, factor=2)
+        for _ in range(self.internals):
+            out2 = outputs.pop()
+            out = unsqueeze2d(unsplit2d([out, out2]), factor=2)
+        assert len(outputs) == 0
+        
+        return out, logdet_accum, attns
 
     @overrides
     def backward(self, input: torch.Tensor, h=None) -> Tuple[torch.Tensor, torch.Tensor]:
@@ -344,6 +447,35 @@ class MultiScaleArchitecture(Flow):
             logdet_accum = logdet_accum + logdet
         assert len(outputs) == 0
         return out, logdet_accum
+
+    def backward_attn(self, input: torch.Tensor, h=None) -> Tuple[torch.Tensor, torch.Tensor]:
+        outputs = []
+        out = input
+        for i in range(self.levels - 1):
+            if i > 0:
+                out1, out2 = split2d(out, self.blocks[i].z_channels)
+                outputs.append(out2)
+                out = out1
+            out = squeeze2d(out, factor=2)
+            if self.squeeze_h:
+                h = squeeze2d(h, factor=2)
+
+        logdet_accum = input.new_zeros(input.size(0))
+        for i, block in enumerate(reversed(self.blocks)):
+            if i > 0:
+                out = unsqueeze2d(out, factor=2)
+                if self.squeeze_h:
+                    h = unsqueeze2d(h, factor=2)
+                if i < self.levels - 1:
+                    out2 = outputs.pop()
+                    out = unsplit2d([out, out2])
+            if i < self.levels - 1:
+                out, logdet = block.backward(out, h=h)
+            else:
+                out, logdet, attn = block.backward_attn(out, h=h)
+            logdet_accum = logdet_accum + logdet
+        assert len(outputs) == 0
+        return out, logdet_accum, attn
 
     @overrides
     def init(self, data: torch.Tensor, h=None, init_scale=1.0) -> Tuple[torch.Tensor, torch.Tensor]:

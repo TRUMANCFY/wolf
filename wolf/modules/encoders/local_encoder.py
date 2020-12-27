@@ -40,7 +40,10 @@ class LocalResNetEncoderBatchNorm(Encoder):
 
     def forward(self, x):
         # [batch, out_planes, h, w]
-        return self.net(x)
+        print('LocalResNet input shape: ', x.size())
+        x = self.net(x)
+        print('LocalResNet output shape: ', x.size())
+        return x
 
     def init(self, x, init_scale=1.0):
         with torch.no_grad():

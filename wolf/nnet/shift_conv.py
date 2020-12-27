@@ -52,11 +52,20 @@ class ShiftedConv2d(nn.Conv2d):
                                             stride=stride, dilation=dilation, groups=groups, bias=bias)
 
     def forward(self, input, shifted=True):
+        # print('===========')
+        # print('order: ', self.order)
+        # print('kernel size: ', self.kernel_size)
+        # print('origin input shape: ', input.shape)
+        # print('padding: ', self.shift_padding)
         if shifted:
             input = F.pad(input, self.shift_padding)
+            # print('shape after padding: ', input.shape)
             bs, channels, height, width = input.size()
             t, b, l, r = self.cut
             input = input[:, :, t:height + b, l:width + r]
+            # print('shape after cutting: ', input.shape)
+        
+        print('the shape of weight: ', self.weight.shape)
         return F.conv2d(input, self.weight, self.bias, self.stride,
                         self.padding, self.dilation, self.groups)
 

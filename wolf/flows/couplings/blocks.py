@@ -4,6 +4,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+import math
+
 from wolf.nnet.weight_norm import Conv2dWeightNorm, LinearWeightNorm
 from wolf.nnet.shift_conv import ShiftedConv2d
 
@@ -49,13 +51,15 @@ class NICEMLPBlock(nn.Module):
 
 
 class NICEConvBlock(nn.Module):
-    def __init__(self, in_channels, out_channels, hidden_channels, activation, normalize=None, num_groups=None):
+    def __init__(self, in_channels, out_channels, hidden_channels, activation, normalize=None, num_groups=None, h_type=None):
         super(NICEConvBlock, self).__init__()
         assert activation in ['relu', 'elu', 'leaky_relu']
         assert normalize in [None, 'batch_norm', 'group_norm', 'instance_norm']
         self.conv1 = nn.Conv2d(in_channels, hidden_channels, kernel_size=3, padding=1, bias=False)
         self.conv2 = nn.Conv2d(hidden_channels, hidden_channels, kernel_size=1, bias=False)
         self.conv3 = Conv2dWeightNorm(hidden_channels, out_channels, kernel_size=3, padding=1, bias=True)
+
+        self.h_type = h_type
 
         if activation == 'relu':
             self.activation = nn.ReLU(inplace=True)
@@ -91,13 +95,16 @@ class NICEConvBlock(nn.Module):
         out = self.conv1(x)
         if self.norm1 is not None:
             out = self.norm1(out)
+        
         out = self.activation(out)
         # conv2
         out = self.conv2(out)
         if self.norm2 is not None:
             out = self.norm2(out)
+        
         if h is not None:
             out = out + h
+            
         out = self.activation(out)
         # conv3
         out = self.conv3(out)
@@ -108,13 +115,16 @@ class NICEConvBlock(nn.Module):
             out = self.conv1(x)
             if self.norm1 is not None:
                 out = self.norm1(out)
+            
             out = self.activation(out)
             # init conv2
             out = self.conv2(out)
             if self.norm2 is not None:
                 out = self.norm2(out)
+            
             if h is not None:
                 out = out + h
+                
             out = self.activation(out)
             # init conv3
             out = self.conv3.init(out, init_scale=0.0 * init_scale)
@@ -170,12 +180,15 @@ class GlobalLinearCondNet(nn.Module):
 
     def forward(self, h, x=None):
         out = self.net(h)
+        # print('out shape: ', out.shape)
         bs, fs = out.size()
         return out.view(bs, fs, 1, 1)
 
 
 class GlobalAttnCondNet(nn.Module):
     def __init__(self, q_dim, k_dim, out_dim):
+        # q_dim: h_channels
+        # k_dim: in_channels
         super(GlobalAttnCondNet, self).__init__()
         self.query_proj = nn.Linear(q_dim, out_dim, bias=True)
         self.key_proj = nn.Conv2d(k_dim, out_dim, kernel_size=1, bias=True)
@@ -198,6 +211,108 @@ class GlobalAttnCondNet(nn.Module):
         # [batch, height, width]
         attn_weights = torch.einsum('bd,bdhw->bhw', h, key)
         attn_weights = F.softmax(attn_weights.view(bs, -1), dim=-1).view(bs, height, width)
+        # print('attn shape: ', attn_weights.shape)
         # [batch, out_dim, height, width]
         out = h.view(bs, dim, 1, 1) * attn_weights.unsqueeze(1)
         return out
+        # return attn_weights
+
+    def forward_attn(self, h, x):
+        # [batch, out_dim]
+        h = self.query_proj(h)
+        # [batch, out_dim, height, width]
+        key = self.key_proj(x)
+        bs, dim, height, width = key.size()
+        # [batch, height, width]
+        attn_weights = torch.einsum('bd,bdhw->bhw', h, key)
+        attn_weights = F.softmax(attn_weights.view(bs, -1), dim=-1).view(bs, height, width)
+        # print('attn shape: ', attn_weights.shape)
+        # [batch, out_dim, height, width]
+        out = h.view(bs, dim, 1, 1) * attn_weights.unsqueeze(1)
+        return out, attn_weights
+
+
+class GlobalAttnCondUnit(nn.Module):
+    def __init__(self, q_dim, k_dim, out_dim):
+        # q_dim: h_channels
+        # k_dim: in_channels
+        super(GlobalAttnCondUnit, self).__init__()
+
+        self.query_proj = nn.Linear(q_dim, out_dim, bias=True)
+        self.key_proj = nn.Conv2d(k_dim, out_dim, kernel_size=1, bias=True)
+        self.reset_parameters()
+
+    def reset_parameters(self):
+        # key proj
+        nn.init.xavier_uniform_(self.key_proj.weight)
+        nn.init.constant_(self.key_proj.bias, 0)
+        # query proj
+        nn.init.xavier_uniform_(self.query_proj.weight)
+        nn.init.constant_(self.query_proj.bias, 0)
+
+    def forward(self, h, x):
+        # [batch, out_dim]
+        h = self.query_proj(h)
+        # [batch, out_dim, height, width]
+        key = self.key_proj(x)
+        bs, dim, height, width = key.size()
+        # [batch, height, width]
+        attn_weights = torch.einsum('bd,bdhw->bhw', h, key)
+        # attn_weights = F.softmax(attn_weights.view(bs, -1), dim=-1).view(bs, height, width)
+        # print('attn shape: ', attn_weights.shape)
+        return attn_weights.div(h.size(-1)).unsqueeze(1)
+
+    def forward_attn(self, h, x):
+        # [batch, out_dim]
+        return self.forward(h, x)
+
+
+class GlobalAttnMask(nn.Module):
+    def __init__(self, q_dim, k_dim, out_dim):
+        super(GlobalAttnMask, self).__init__()
+
+        self.query_proj = nn.Linear(q_dim, out_dim, bias=True)
+        self.key_proj = nn.Conv2d(k_dim, out_dim, kernel_size=1, bias=True)
+        self.reset_parameters()
+
+    def reset_parameters(self):
+        # key proj
+        nn.init.xavier_uniform_(self.key_proj.weight)
+        nn.init.constant_(self.key_proj.bias, 0)
+        # query proj
+        nn.init.xavier_uniform_(self.query_proj.weight)
+        nn.init.constant_(self.query_proj.bias, 0)
+    
+    def forward(self, h, x):
+        # [batch, out_dim]
+        h = self.query_proj(h)
+        # [batch, out_dim, height, width]
+        key = self.key_proj(x)
+        bs, dim, height, width = key.size()
+        # [batch, height, width]
+        attn_weights = torch.einsum('bd, bdhw->bdhw', h, key)
+        return torch.sigmoid(torch.logsumexp(mask, dim=1)) + 1e-8
+
+
+# class GlobalChannelAttnCondNet(nn.Module):
+#     def __init__(self, q_dim, k_dim, out_dim):
+#         # q_dim: h_channels
+#         # k_dim: in_channels
+#         super(GlobalChannelAttnCondNet, self).__init__()
+
+#         self.units = nn.ModuleList([
+#             GlobalAttnCondUnit(q_dim, k_dim, out_dim) for _ in range(out_dim)
+#         ])
+
+#     def forward(self, h, x):
+#         channel_attns = [
+#             unit(h, x) for unit in self.units
+#         ]
+
+#         channel_attns = torch.cat(channel_attns, dim=1)
+        
+#         print(channel_attns.shape)
+#         return channel_attns
+    
+#     def forward_attn(self, h, x):
+#         return self.forward(h, x)

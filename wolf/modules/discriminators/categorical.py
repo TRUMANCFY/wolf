@@ -72,10 +72,11 @@ class CategoricalDiscriminator(Discriminator):
     @overrides
     def sample_from_posterior(self, x, y=None, nsamples=1, random=True):
         assert y is not None
-        print(y.shape)
+        # print(y.shape)
         log_probs = x.new_zeros(x.size(0), nsamples)
         # [batch, nsamples, dim]
         z = self.net(self.embed(y)).unsqueeze(1) + log_probs.unsqueeze(2)
+        # print(z.shape)
         return z, log_probs
 
     @overrides

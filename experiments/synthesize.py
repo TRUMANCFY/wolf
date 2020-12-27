@@ -37,8 +37,12 @@ def setup(args):
             assert image_size in [128, 256]
         elif dataset == 'celeba':
             assert image_size in [256, 512]
+        elif dataset == 'celeba-hair':
+            assert image_size in [256, 512]
         elif dataset == 'imagenet':
             assert image_size in [64, 128, 256]
+        elif dataset == 'brats':
+            assert image_size in [64, 128]
 
     dataset = args.dataset
     if args.category is not None:

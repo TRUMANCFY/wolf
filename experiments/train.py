@@ -58,6 +58,8 @@ def setup(args):
             assert image_size in [128, 256]
         elif dataset == 'celeba':
             assert image_size in [256, 512]
+        elif dataset == 'celeba-hair':
+            assert image_size in [256, 512]
         elif dataset == 'imagenet':
             assert image_size in [64, 128, 256]
 
@@ -402,6 +404,7 @@ def train(args, train_loader, train_index, train_sampler, val_loader, val_data, 
 
             if step > 0 and step % steps_per_checkpoint == 0 and is_master(args.rank):
                 # save checkpoint
+                wolf.save(self.model_path, step)
                 checkpoint_name = args.checkpoint_name + '{}.tar'.format(step)
                 torch.save({'epoch': epoch,
                             'step': step,
@@ -447,7 +450,7 @@ def train(args, train_loader, train_index, train_sampler, val_loader, val_data, 
                         best_kl = kl
                         best_nent = nent
                         best_nepd = nepd
-                        wolf.save(args.model_path)
+                        wolf.save(args.model_path, 0)
                         checkpoint_name = args.checkpoint_name + '{}.tar'.format(0)
                         torch.save({'epoch': epoch + 1,
                                     'step': -1,
@@ -473,6 +476,7 @@ def train(args, train_loader, train_index, train_sampler, val_loader, val_data, 
                 best_nll, best_kl, best_nent, best_bpd, best_nepd, best_epoch), log)
             logging('=' * 125, log)
             # save checkpoint
+            wolf.save(args.model_path, 1)
             checkpoint_name = args.checkpoint_name + '{}.tar'.format(1)
             torch.save({'epoch': epoch + 1,
                         'step': -1,

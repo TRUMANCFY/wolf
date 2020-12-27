@@ -1,7 +1,7 @@
 __author__ = 'max'
 
 from overrides import overrides
-from typing import Dict, Tuple
+from typing import Dict, Tuple, List
 import torch
 
 from wolf.flows.flow import Flow
@@ -19,9 +19,24 @@ class GlowUnit(Flow):
                  transform='affine', alpha=1.0, coupling_type='conv', h_type=None,
                  activation='relu', normalize=None, num_groups=None):
         super(GlowUnit, self).__init__(inverse)
+        self.h_type = h_type
+        if h_type and '#' in h_type:
+            try:
+                h_type_1, h_type_2 = h_type.split('#')
+                h_type = h_type_2
+                print('There are two types of h_type: {} and {}'.format(h_type_1, h_type_2))
+            except:
+                raise ValueError('The number of h_type is incorrect')
+        else:
+            h_type_1 = h_type_2 = h_type
+        
+        # print(h_type)
+        # print(h_type_1)
+        # print(h_type_2)
+
         self.coupling1_up = NICE2d(in_channels, hidden_channels=hidden_channels,
                                    h_channels=h_channels, transform=transform, alpha=alpha, inverse=inverse,
-                                   type=coupling_type, h_type=h_type, split_type='continuous', order='up',
+                                   type=coupling_type, h_type=h_type_1, split_type='continuous', order='up',
                                    activation=activation, normalize=normalize, num_groups=num_groups)
 
         self.coupling1_dn = NICE2d(in_channels, hidden_channels=hidden_channels,
@@ -65,6 +80,33 @@ class GlowUnit(Flow):
 
         return out, logdet_accum
 
+    def forward_attn(self, input: torch.Tensor, h=None) -> List[torch.Tensor]:
+        # block1, type=continuous
+        out, logdet_accum, attn1 = self.coupling1_up.forward_attn(input, h=h)
+
+        out, logdet, attn2 = self.coupling1_dn.forward_attn(out, h=h)
+        logdet_accum = logdet_accum + logdet
+
+        # ================================================================================
+
+        out, logdet = self.actnorm.forward(out)
+        logdet_accum = logdet_accum + logdet
+
+        # ================================================================================
+
+        # block2, type=skip
+        out, logdet, attn3 = self.coupling2_up.forward_attn(out, h=h)
+        logdet_accum = logdet_accum + logdet
+
+        out, logdet, attn4 = self.coupling2_dn.forward_attn(out, h=h)
+        logdet_accum = logdet_accum + logdet
+
+
+        if 'global_attn' in self.h_type:
+            return out, logdet_accum, attn1
+        else:
+            return out, logdet_accum, None
+
     @overrides
     def backward(self, input: torch.Tensor, h=None) -> Tuple[torch.Tensor, torch.Tensor]:
         # block2, type=skip
@@ -88,6 +130,29 @@ class GlowUnit(Flow):
         logdet_accum = logdet_accum + logdet
 
         return out, logdet_accum
+
+    def backward_attn(self, input: torch.Tensor, h=None) -> Tuple[torch.Tensor, torch.Tensor]:
+        # block2, type=skip
+        out, logdet_accum = self.coupling2_dn.backward(input, h=h)
+
+        out, logdet = self.coupling2_up.backward(out, h=h)
+        logdet_accum = logdet_accum + logdet
+
+        # ===============================================================================
+
+        out, logdet = self.actnorm.backward(out)
+        logdet_accum = logdet_accum + logdet
+
+        # ===============================================================================
+
+        # block1, type=continuous
+        out, logdet = self.coupling1_dn.backward(out, h=h)
+        logdet_accum = logdet_accum + logdet
+
+        out, logdet, attn = self.coupling1_up.backward_attn(out, h=h)
+        logdet_accum = logdet_accum + logdet
+
+        return out, logdet_accum, attn
 
     @overrides
     def init(self, data: torch.Tensor, h=None, init_scale=1.0):
@@ -142,6 +207,16 @@ class GlowStep(Flow):
         logdet_accum = logdet_accum + logdet
         return out, logdet_accum
 
+    def forward_attn(self, input: torch.Tensor, h=None) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        out, logdet_accum = self.actnorm.forward(input)
+
+        out, logdet = self.conv1x1.forward(out)
+        logdet_accum = logdet_accum + logdet
+
+        out, logdet, attns = self.unit.forward_attn(out, h=h)
+        logdet_accum = logdet_accum + logdet
+        return out, logdet_accum, attns
+
     @overrides
     def backward(self, input: torch.Tensor, h=None) -> Tuple[torch.Tensor, torch.Tensor]:
         out, logdet_accum = self.unit.backward(input, h=h)
@@ -152,6 +227,16 @@ class GlowStep(Flow):
         out, logdet = self.actnorm.backward(out)
         logdet_accum = logdet_accum + logdet
         return out, logdet_accum
+
+    def backward_attn(self, input, h):
+        out, logdet_accum, attn = self.unit.backward_attn(input, h=h)
+
+        out, logdet = self.conv1x1.backward(out)
+        logdet_accum = logdet_accum + logdet
+
+        out, logdet = self.actnorm.backward(out)
+        logdet_accum = logdet_accum + logdet
+        return out, logdet_accum, attn
 
     @overrides
     def init(self, data, h=None, init_scale=1.0) -> Tuple[torch.Tensor, torch.Tensor]:

@@ -71,6 +71,14 @@ class Flow(nn.Module):
                 return self.init(x, *h, init_scale=init_scale, **kwargs)
             else:
                 return self.forward(x, *h, **kwargs)
+    
+    def fwdpass_attn(self, x: torch.Tensor, *h):
+        # if self.inverse:
+        #     print('get backward attn')
+        #     return self.backward_attn(x, *h)
+        # else:
+        print('get forward attn')
+        return self.forward_attn(x, *h)
 
     def bwdpass(self, y: torch.Tensor, *h, init=False, init_scale=1.0, **kwargs) -> Tuple[torch.Tensor, torch.Tensor]:
         """

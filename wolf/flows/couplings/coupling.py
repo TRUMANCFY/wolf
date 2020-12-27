@@ -5,7 +5,7 @@ from typing import Tuple, Dict
 import torch
 
 from wolf.flows.couplings.blocks import NICEConvBlock, MCFBlock, NICEMLPBlock
-from wolf.flows.couplings.blocks import LocalLinearCondNet, GlobalLinearCondNet, GlobalAttnCondNet
+from wolf.flows.couplings.blocks import LocalLinearCondNet, GlobalLinearCondNet, GlobalAttnCondNet, GlobalAttnCondUnit, GlobalAttnMask
 from wolf.flows.flow import Flow
 from wolf.flows.couplings.transform import Additive, Affine, NLSQ, ReLU, SymmELU
 
@@ -229,9 +229,9 @@ class NICE2d(Flow):
         assert type in ['conv']
         if type == 'conv':
             self.net = NICEConvBlock(in_channels, out_channels, hidden_channels, activation,
-                                     normalize=normalize, num_groups=num_groups)
+                                     normalize=normalize, num_groups=num_groups, h_type=h_type)
 
-        assert h_type in [None, 'local_linear', 'global_linear', 'global_attn']
+        assert h_type in [None, 'local_linear', 'global_linear', 'global_attn', 'global_mask']
         if h_type is None:
             assert h_channels == 0
             self.h_net = None
@@ -239,10 +239,16 @@ class NICE2d(Flow):
             self.h_net = LocalLinearCondNet(h_channels, hidden_channels, kernel_size=3)
         elif h_type == 'global_linear':
             self.h_net = GlobalLinearCondNet(h_channels, hidden_channels)
+        # elif h_type == 'global_attn':
+        #     self.h_net = GlobalAttnCondNet(h_channels, in_channels, hidden_channels)
         elif h_type == 'global_attn':
-            self.h_net = GlobalAttnCondNet(h_channels, in_channels, hidden_channels)
+            self.h_net = GlobalAttnCondUnit(h_channels, in_channels, hidden_channels)
+        elif h_type == 'global_mask':
+            self.h_net = GlobalAttnMask(h_channels, in_channels, hidden_channels)
         else:
             raise ValueError('unknown conditional transform: {}'.format(h_type))
+        
+        self.h_type = h_type
 
     def split(self, z):
         split_dim = 1
@@ -302,12 +308,51 @@ class NICE2d(Flow):
             h = self.h_net(h, x=z)
         else:
             h = None
+        
+        params = self.transform.calc_params(self.calc_params(z, h=h))
+        
+        zp, logdet = self.transform.fwd(zp, params)
+
+        z1, z2 = (z, zp) if self.up else (zp, z)
+        return self.unsplit(z1, z2), logdet
+
+
+    def forward_attn(self, input: torch.Tensor, h=None) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """
+        Args:
+            input: Tensor
+                input tensor [batch, in_channels, H, W]
+            h: Tensor
+                conditional input (default: None)
+
+        Returns: out: Tensor , logdet: Tensor
+            out: [batch, in_channels, H, W], the output of the flow
+            logdet: [batch], the log determinant of :math:`\partial output / \partial input`
+        """
+        # [batch, length, in_channels]
+        z1, z2 = self.split(input)
+        # [batch, length, features]
+        z, zp = (z1, z2) if self.up else (z2, z1)
+
+        attn_weights = None
+
+        if self.h_net is not None:
+            if self.h_type == 'global_attn':
+                h = self.h_net.forward_attn(h, x=z)
+            else:
+                h = self.h_net(h, x=z)
+        else:
+            h = None
 
         params = self.transform.calc_params(self.calc_params(z, h=h))
         zp, logdet = self.transform.fwd(zp, params)
 
         z1, z2 = (z, zp) if self.up else (zp, z)
-        return self.unsplit(z1, z2), logdet
+        
+        if self.h_type == 'global_attn':
+            return self.unsplit(z1, z2), logdet, h
+        else:
+            return self.unsplit(z1, z2), logdet, None
 
     @overrides
     def backward(self, input: torch.Tensor, h=None) -> Tuple[torch.Tensor, torch.Tensor]:
@@ -326,6 +371,26 @@ class NICE2d(Flow):
             return self.backward_analytic(input, h=h)
         else:
             return self.backward_iterative(input, h=h)
+
+    def backward_attn(self, z, h):
+        # [batch, length, in_channels]
+        z1, z2 = self.split(z)
+        # [batch, length, features]
+        z, zp = (z1, z2) if self.up else (z2, z1)
+
+        if self.h_net is not None:
+            if self.h_type == 'global_attn':
+                h = self.h_net.forward_attn(h, x=z)
+            else:
+                h = self.h_net(h, x=z)
+        else:
+            h = None
+
+        params = self.transform.calc_params(self.calc_params(z, h=h))
+        zp, logdet = self.transform.bwd(zp, params)
+
+        z1, z2 = (z, zp) if self.up else (zp, z)
+        return self.unsplit(z1, z2), logdet, h
 
     def backward_analytic(self, z: torch.Tensor, h=None) -> Tuple[torch.Tensor, torch.Tensor]:
         # [batch, length, in_channels]
@@ -378,10 +443,18 @@ class NICE2d(Flow):
             # [batch, length, features]
             z, zp = (z1, z2) if self.up else (z2, z1)
 
+            print(self.h_net)
+
             if self.h_net is not None:
                 h = self.h_net(h, x=z)
             else:
                 h = None
+
+            
+            if self.h_type == 'global_attn':
+                print('the shape of z is ', z.shape)
+                print('the shape of h is ', h.shape)
+
 
             params = self.transform.calc_params(self.init_net(z, h=h, init_scale=init_scale))
             zp, logdet = self.transform.fwd(zp, params)
@@ -442,6 +515,7 @@ class MaskedConvFlow(Flow):
         self.net = MCFBlock(in_channels, out_channels, kernel_size, hidden_channels, order, activation)
 
         assert h_type in [None, 'local_linear', 'global_linear', 'global_attn']
+        self.h_type = h_type
         if h_type is None:
             assert h_channels is None or h_channels == 0
             self.h_net = None
@@ -452,7 +526,7 @@ class MaskedConvFlow(Flow):
             self.h_net = GlobalLinearCondNet(h_channels, hidden_channels)
         elif h_type == 'global_attn':
             # TODO add global attn
-            self.h_net = None
+            self.h_net = GlobalAttnCondUnit(h_channels, in_channels, hidden_channels)
         else:
             raise ValueError('unknown conditional transform: {}'.format(h_type))
 
@@ -478,7 +552,7 @@ class MaskedConvFlow(Flow):
             logdet: [batch], the log determinant of :math:`\partial output / \partial input`
         """
         if self.h_net is not None:
-            h = self.h_net(h)
+            h = self.h_net(h, input)
         else:
             h = None
 
@@ -605,7 +679,10 @@ class MaskedConvFlow(Flow):
     def init(self, data, h=None, init_scale=1.0) -> Tuple[torch.Tensor, torch.Tensor]:
         with torch.no_grad():
             if self.h_net is not None:
-                h = self.h_net(h)
+                if self.h_type == 'global_attn':
+                    h = self.h_net(h, data)
+                else:
+                    h = self.h_net(h)
             else:
                 h = None
 

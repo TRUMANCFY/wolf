@@ -39,6 +39,15 @@ class Generator(nn.Module):
         z, logdet = self.flow.fwdpass(epsilon, h)
         return z, logdet
 
+    def generate_with_attn(self, x, h):
+        # z, logdet = self.flow.fwdpass(x, h)
+        z, logdet, attns = self.flow.backward_attn(x, h)
+        return z, logdet, attns
+    
+    def forward_attn(self, x, h: Union[None, torch.Tensor]):
+        return self.flow.fwdpass_attn(x, h)[-1]
+
+
     def encode(self, x: torch.Tensor, h: Union[None, torch.Tensor] = None) -> torch.Tensor:
         """
 

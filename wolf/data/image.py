@@ -9,7 +9,8 @@ import glob
 from zipfile import ZipFile
 
 import random
-from .celeba_dataset import CelebaDataset
+from .celeba_dataset import CelebaDataset, CelebaHairDataset
+from .brats import BratsDataSet
 
 
 def load_datasets(dataset, image_size, data_path):
@@ -26,6 +27,10 @@ def load_datasets(dataset, image_size, data_path):
         return load_imagenet(data_path, image_size)
     elif dataset == 'celeba':
         return load_celeba(data_path, image_size)
+    elif dataset == 'celeba-hair':
+        return load_celeba_hair(data_path, image_size)
+    elif dataset == 'brats':
+        return load_brats(data_path, image_size)
     else:
         raise ValueError('unknown data set %s' % dataset)
 
@@ -114,6 +119,65 @@ def load_imagenet(data_path, image_size):
     return train_data, val_data
 
 
+def load_brats(data_path, image_size):
+    train_data = BratsDataSet(data_path=data_path, image_size=image_size, split='train')
+    valid_data = BratsDataSet(data_path, image_size, split='valid')
+
+    return train_data, valid_data
+
+
+def load_celeba_hair(data_path, image_size):
+    image_path = os.path.join(data_path, 'img_hair_celeba/')
+    attr_file = os.path.join(data_path, 'list_attr_celeba_hair.txt')
+    if os.path.isdir(image_path) == 0:
+        raise FileNotFoundError('The hair celeba data does not exist')
+    
+    data_paths = sorted(glob.glob(image_path + '*.jpg'))
+    
+    # get first 1000
+    data_paths = data_paths[:1000]
+
+    print('The number of extraction is {}'.format(len(data_paths)))
+
+    label_list = open(attr_file).readlines()[1:]
+
+    data_label = {}
+
+    for label_str in label_list:
+        img_name, label = label_str.split()
+        img_file_name = os.path.join(image_path, img_name)
+        label = int(label)
+        data_label[img_file_name] = label
+    
+    indices = list(range(len(data_paths)))
+    random.shuffle(indices)
+    split_train = int(0.8 * len(data_paths))
+    train_idx, valid_idx = indices[:split_train], indices[split_train:]
+
+    train_data_paths = [data_paths[idx] for idx in train_idx]
+    train_data_labels = [data_label[img_file] for img_file in train_data_paths]
+
+    valid_data_paths = [data_paths[idx] for idx in valid_idx]
+    valid_data_labels = [data_label[img_file] for img_file in valid_data_paths]
+
+    # build up the dataset
+    train_data = CelebaHairDataset(
+        data_path=train_data_paths,
+        label_path=train_data_labels,
+        image_size=image_size,
+        split='train',
+    )
+
+    val_data = CelebaHairDataset(
+        data_path=valid_data_paths,
+        label_path=valid_data_labels,
+        image_size=image_size,
+        split='valid',
+    )
+
+    return train_data, val_data
+    
+
 def load_celeba(data_path, image_size):
     image_file = os.path.join(data_path, 'img_align_celeba.zip')
     attr_file = os.path.join(data_path, 'list_attr_celeba.txt')
@@ -129,8 +193,8 @@ def load_celeba(data_path, image_size):
     
     data_paths = sorted(glob.glob(direct_folder+'*.jpg'))
 
-    # here we only select first 10000
-    data_paths = data_paths[:10000]
+    # here we only select first 5000
+    data_paths = data_paths[:500]
 
     print('The number of extraction is {}'.format(len(data_paths)))
 
@@ -222,6 +286,7 @@ def preprocess(img, n_bits, noise=None):
     # normalize
     img = img.div(n_bins)
     img = (img - 0.5).div(0.5)
+    # img in the range (-1, 1)
     return img
 
 
