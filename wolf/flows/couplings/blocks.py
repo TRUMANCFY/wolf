@@ -6,9 +6,9 @@ import torch.nn.functional as F
 
 import math
 
-from wolf.nnet.weight_norm import Conv2dWeightNorm, LinearWeightNorm
+from wolf.nnet.weight_norm import Conv2dWeightNorm, LinearWeightNorm, CondConv2dWeightNorm
 from wolf.nnet.shift_conv import ShiftedConv2d
-
+from wolf.nnet.cond_conv import CondConv2d
 
 class NICEMLPBlock(nn.Module):
     def __init__(self, in_features, out_features, hidden_features, activation):
@@ -49,6 +49,96 @@ class NICEMLPBlock(nn.Module):
             out = self.fc3.init(out, init_scale=0.0 * init_scale)
             return out
 
+
+class NICECondConvBlock(nn.Module):
+    def __init__(self, in_channels, out_channels, hidden_channels, h_channels, activation, normalize=None, num_groups=None, h_type=None):
+        super(NICECondConvBlock, self).__init__()
+        assert activation in ['relu', 'elu', 'leaky_relu']
+        assert normalize in [None, 'batch_norm', 'group_norm', 'instance_norm']
+        # self.conv1 = nn.Conv2d(in_channels, hidden_channels, kernel_size=3, padding=1, bias=False)
+        # self.conv2 = nn.Conv2d(hidden_channels, hidden_channels, kernel_size=1, bias=False)
+        self.conv1 = CondConv2d(in_channels, hidden_channels, h_channels, kernel_size=3, padding=1, bias=False)
+        self.conv2 = CondConv2d(hidden_channels, hidden_channels, h_channels, kernel_size=1, bias=False)
+        # self.conv3 = CondConv2dWeightNorm(hidden_channels, out_channels, h_channels, kernel_size=3, padding=1, bias=True)
+        self.conv3 = Conv2dWeightNorm(hidden_channels, out_channels, kernel_size=3, padding=1, bias=True)
+
+        self.h_type = h_type
+
+        if activation == 'relu':
+            self.activation = nn.ReLU(inplace=True)
+        elif activation == 'elu':
+            self.activation = nn.ELU(inplace=True)
+        else:
+            self.activation = nn.LeakyReLU(inplace=True, negative_slope=1e-1)
+
+        if normalize is None:
+            self.norm1 = None
+            self.norm2 = None
+        elif normalize == 'batch_norm':
+            self.norm1 = nn.BatchNorm2d(hidden_channels)
+            self.norm2 = nn.BatchNorm2d(hidden_channels)
+        elif normalize == 'instance_norm':
+            self.norm1 = nn.InstanceNorm2d(hidden_channels, affine=True)
+            self.norm2 = nn.InstanceNorm2d(hidden_channels, affine=True)
+        else:
+            self.norm1 = nn.GroupNorm(num_groups, hidden_channels, affine=True)
+            self.norm2 = nn.GroupNorm(num_groups, hidden_channels, affine=True)
+        self.reset_parameters()
+
+    def reset_parameters(self):
+        if self.norm1 is not None and self.norm1.affine:
+            # norm 1
+            nn.init.constant_(self.norm1.weight, 1.0)
+            nn.init.constant_(self.norm1.bias, 0.0)
+            # norm 2
+            nn.init.constant_(self.norm2.weight, 1.0)
+            nn.init.constant_(self.norm2.bias, 0.0)
+
+    def forward(self, x, origin_h=None, h=None):
+        out = self.conv1(x, origin_h)
+        if self.norm1 is not None:
+            out = self.norm1(out)
+        
+        out = self.activation(out)
+        # conv2
+        out = self.conv2(out, origin_h)
+        if self.norm2 is not None:
+            out = self.norm2(out)
+        
+        if h is not None:
+            if self.h_type != 'global_mask':
+                out = out + h
+            else:
+                out = out * h.unsqueeze(1)
+            
+        out = self.activation(out)
+        # conv3
+        # out = self.conv3(out, origin_h)
+        out = self.conv3(out)
+        return out
+
+    def init(self, x, origin_h=None, h=None, init_scale=1.0):
+        with torch.no_grad():
+            out = self.conv1(x, origin_h)
+            if self.norm1 is not None:
+                out = self.norm1(out)
+            
+            out = self.activation(out)
+            # init conv2
+            out = self.conv2(out, origin_h)
+            if self.norm2 is not None:
+                out = self.norm2(out)
+            
+            if h is not None:
+                if self.h_type != 'global_mask':
+                    out = out + h
+                else:
+                    out = out * h.unsqueeze(1)
+                
+            out = self.activation(out)
+            # init conv3
+            out = self.conv3.init(out, init_scale=0.0 * init_scale)
+            return out
 
 class NICEConvBlock(nn.Module):
     def __init__(self, in_channels, out_channels, hidden_channels, activation, normalize=None, num_groups=None, h_type=None):
@@ -103,7 +193,10 @@ class NICEConvBlock(nn.Module):
             out = self.norm2(out)
         
         if h is not None:
-            out = out + h
+            if self.h_type != 'global_mask':
+                out = out + h
+            else:
+                out = out * h.unsqueeze(1)
             
         out = self.activation(out)
         # conv3
@@ -123,7 +216,10 @@ class NICEConvBlock(nn.Module):
                 out = self.norm2(out)
             
             if h is not None:
-                out = out + h
+                if self.h_type != 'global_mask':
+                    out = out + h
+                else:
+                    out = out * h.unsqueeze(1)
                 
             out = self.activation(out)
             # init conv3
@@ -284,14 +380,18 @@ class GlobalAttnMask(nn.Module):
         nn.init.constant_(self.query_proj.bias, 0)
     
     def forward(self, h, x):
+        # print('h shape: ', h.shape)
+        # print('x shape: ', x.shape)
         # [batch, out_dim]
         h = self.query_proj(h)
         # [batch, out_dim, height, width]
         key = self.key_proj(x)
         bs, dim, height, width = key.size()
         # [batch, height, width]
-        attn_weights = torch.einsum('bd, bdhw->bdhw', h, key)
-        return torch.sigmoid(torch.logsumexp(mask, dim=1)) + 1e-8
+        mask = torch.einsum('bd, bdhw->bdhw', h, key)
+        mask = torch.sigmoid(torch.logsumexp(mask, dim=1)) + 1e-8
+        # print('mask shape: ', mask.shape)
+        return mask
 
 
 # class GlobalChannelAttnCondNet(nn.Module):

@@ -6,3 +6,4 @@ from wolf.nnet.resnets import *
 from wolf.nnet.attention import MultiHeadAttention, MultiHeadAttention2d
 from wolf.nnet.layer_norm import LayerNorm
 from wolf.nnet.adaptive_instance_norm import AdaIN2d
+from wolf.nnet.cond_conv import CondConv2d

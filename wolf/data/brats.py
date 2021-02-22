@@ -20,11 +20,24 @@ class BratsDataSet(Dataset):
         print('data: ', self.data.dtype)
         print('seg: ', self.seg.dtype)
 
+        # get just part of the data
+        # if split == 'train':
+        #     self.data = self.data[:3000, :, :]
+        #     self.label = self.label[:3000]
+        #     self.seg = self.seg[:3000, :, :]
+        # else:
+        #     self.data = self.data[:300, :, :]
+        #     self.label = self.label[:300]
+        #     self.seg = self.seg[:300, :, :]
+
         assert self.data.shape[0] == self.label.shape[0] == self.seg.shape[0], 'The length of data, label and segmentation should be the same'
 
         # convert numpy to tensor
         self.data = torch.from_numpy(self.data)
         self.label = torch.from_numpy(self.label)
+        # print('label type: ', type(self.label))
+        self.label = self.label.type(LongTensor)
+        
         self.seg = torch.from_numpy(self.seg)
 
         self.transform = transforms.Compose([
@@ -47,5 +60,7 @@ class BratsDataSet(Dataset):
         image_tensor = self.transform(image_tensor)
         seg_tensor = self.transform(seg_tensor)
 
-        return image_tensor, image_label
+        # print('image_tensor shape: ', image_tensor.shape)
+
+        return image_tensor, image_label, seg_tensor
 

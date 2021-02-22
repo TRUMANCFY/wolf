@@ -75,6 +75,8 @@ class CategoricalDiscriminator(Discriminator):
         # print(y.shape)
         log_probs = x.new_zeros(x.size(0), nsamples)
         # [batch, nsamples, dim]
+        # print('first shape: ', self.net(self.embed(y)).unsqueeze(1).shape)
+        # print('second shape: ', log_probs.unsqueeze(2).shape)
         z = self.net(self.embed(y)).unsqueeze(1) + log_probs.unsqueeze(2)
         # print(z.shape)
         return z, log_probs

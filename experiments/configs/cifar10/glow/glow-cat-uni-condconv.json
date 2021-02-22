@@ -14,8 +14,8 @@
       "transform": "affine",
       "prior_transform": "affine",
       "alpha": 1.0,
-      "num_groups": [2, 4, 4, 4],
-      "coupling_type": "conv"
+      "coupling_type": "cond_conv",
+      "num_groups": [2, 4, 4, 4]
     }
   },
   "discriminator" : {

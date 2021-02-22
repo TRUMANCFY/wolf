@@ -205,6 +205,7 @@ def sample(args, epoch, wolf):
 
 
 def eval(args, val_loader, wolf):
+    print('Start to evaluate')
     wolf.eval()
     wolf.sync()
     gnll = 0
@@ -218,6 +219,8 @@ def eval(args, val_loader, wolf):
     test_k = args.test_k
     for data, y in val_loader:
         batch_size = len(data)
+        # print('eval data shape: ', data.shape)
+        # print('eval label shape: ', y.shape)
         data = data.to(device, non_blocking=True)
         y = y.to(device, non_blocking=True)
         loss_gen, loss_kl, loss_dequant = wolf.loss(data, y=y, n_bits=n_bits, nsamples=test_k)
@@ -316,8 +319,6 @@ def train(args, train_loader, train_index, train_sampler, val_loader, val_data, 
             torch.cuda.empty_cache()
         gc.collect()
         for step, (data, y) in enumerate(train_loader):
-            # print(data.shape)
-            # print(y.shape)
             if step <= last_step:
                 continue
             last_step = -1
@@ -404,7 +405,7 @@ def train(args, train_loader, train_index, train_sampler, val_loader, val_data, 
 
             if step > 0 and step % steps_per_checkpoint == 0 and is_master(args.rank):
                 # save checkpoint
-                wolf.save(self.model_path, step)
+                wolf.save(args.model_path, step)
                 checkpoint_name = args.checkpoint_name + '{}.tar'.format(step)
                 torch.save({'epoch': epoch,
                             'step': step,
@@ -452,6 +453,7 @@ def train(args, train_loader, train_index, train_sampler, val_loader, val_data, 
                         best_nepd = nepd
                         wolf.save(args.model_path, 0)
                         checkpoint_name = args.checkpoint_name + '{}.tar'.format(0)
+                        print('Saving to {}'.format(checkpoint_name))
                         torch.save({'epoch': epoch + 1,
                                     'step': -1,
                                     'model': wolf.state_dict(),
@@ -465,10 +467,12 @@ def train(args, train_loader, train_index, train_sampler, val_loader, val_data, 
                                     'best_nepd': best_nepd},
                                    checkpoint_name)
                     try:
+                        print('Reconstruction starts')
                         reconstruct(args, epoch, val_data, val_index, wolf)
                     except RuntimeError:
                         print('Reconstruction failed.')
                     try:
+                        print('Sample starts')
                         sample(args, epoch, wolf)
                     except RuntimeError:
                         print('Sampling failed')

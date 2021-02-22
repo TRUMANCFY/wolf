@@ -95,33 +95,23 @@ class MultiScaleExternal(Flow):
     """
     def __init__(self, flow_step, num_steps, in_channels, hidden_channels, h_channels,
                  transform='affine', alpha=1.0, inverse=False, kernel_size=(2, 3),
-                 coupling_type='conv', h_type=None, activation='relu', normalize=None, num_groups=None, is_bottom=False):
+                 coupling_type='conv', h_type=None, activation='relu', normalize=None, num_groups=None, mask_pos=None, conv1x1_type='conv1x1'):
         super(MultiScaleExternal, self).__init__(inverse)
-        if not is_bottom or h_type == None or h_type == 'global_attn':
-            steps = [flow_step(in_channels, hidden_channels=hidden_channels, h_channels=h_channels,
+        steps = [flow_step(in_channels, hidden_channels=hidden_channels, h_channels=h_channels,
                             transform=transform, alpha=alpha, inverse=inverse, coupling_type=coupling_type,
                             h_type=h_type, activation=activation, normalize=normalize, num_groups=num_groups,
-                            kernel_size=kernel_size)
+                            kernel_size=kernel_size, conv1x1_type=conv1x1_type)
                     for _ in range(num_steps)]
-        else:
-            steps = []
-            for idx in range(num_steps):
-                if idx == 0:
-                    # h_type="global_attn" + "#" + h_type
-                    # add global attention
-                    steps.append(
-                        flow_step(in_channels, hidden_channels=hidden_channels, h_channels=h_channels,
+
+        # mask_pos should be a two element list like [5, 2]
+        if mask_pos:
+            assert len(mask_pos) == 2, 'the format of mask in MultiScaleExternal is wrong'
+            mask_step = mask_pos[0]
+            mask_pos = mask_pos[1]
+            steps[mask_step] = flow_step(in_channels, hidden_channels=hidden_channels, h_channels=h_channels,
                             transform=transform, alpha=alpha, inverse=inverse, coupling_type=coupling_type,
                             h_type=h_type, activation=activation, normalize=normalize, num_groups=num_groups,
-                            kernel_size=kernel_size)
-                    )
-                else:
-                    steps.append(
-                        flow_step(in_channels, hidden_channels=hidden_channels, h_channels=h_channels,
-                            transform=transform, alpha=alpha, inverse=inverse, coupling_type=coupling_type,
-                            h_type=h_type, activation=activation, normalize=normalize, num_groups=num_groups,
-                            kernel_size=kernel_size)
-                    )
+                            kernel_size=kernel_size, mask_pos=mask_pos, conv1x1_type=conv1x1_type)
 
         self.steps = nn.ModuleList(steps)
 
@@ -141,19 +131,18 @@ class MultiScaleExternal(Flow):
 
     
     def forward_attn(self, input: torch.Tensor, h=None) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        attn = None
+        attns = None
         out = input
         # [batch]
         logdet_accum = input.new_zeros(input.size(0))
         for idx, step in enumerate(self.steps):
-            if idx == 0:
-                out, logdet, attn = step.forward_attn(out, h=h)
-            else:
-                out, logdet = step.forward(out, h=h)
+            out, logdet, attn = step.forward_attn(out, h=h)
+            if attn != None:
+                attns = attn
             # attns.append(attn_list)
             logdet_accum = logdet_accum + logdet
         # attns = torch.cat(attns, dim=0)
-        return out, logdet_accum, attn
+        return out, logdet_accum, attns
 
     @overrides
     def backward(self, input: torch.Tensor, h=None) -> Tuple[torch.Tensor, torch.Tensor]:
@@ -193,7 +182,7 @@ class MultiScaleInternal(Flow):
     def __init__(self, flow_step, num_steps, in_channels, hidden_channels, h_channels,
                  factor=2, transform='affine', prior_transform='affine', alpha=1.0,
                  inverse=False, kernel_size=(2, 3), coupling_type='conv', h_type=None,
-                 activation='relu', normalize=None, num_groups=None):
+                 activation='relu', normalize=None, num_groups=None, conv1x1_type='conv1x1'):
         super(MultiScaleInternal, self).__init__(inverse)
         num_layers = len(num_steps)
         assert num_layers < factor
@@ -203,7 +192,7 @@ class MultiScaleInternal(Flow):
         for num_step in num_steps:
             layer = [flow_step(in_channels, hidden_channels=hidden_channels, h_channels=h_channels,
                                transform=transform, alpha=alpha, inverse=inverse, coupling_type=coupling_type, h_type=h_type,
-                               activation=activation, normalize=normalize, num_groups=num_groups, kernel_size=kernel_size)
+                               activation=activation, normalize=normalize, num_groups=num_groups, kernel_size=kernel_size, conv1x1_type=conv1x1_type)
                      for _ in range(num_step)]
             self.layers.append(nn.ModuleList(layer))
             prior = MultiScalePrior(in_channels, hidden_channels=hidden_channels, h_channels=h_channels,
@@ -300,7 +289,7 @@ class MultiScaleArchitecture(Flow):
     def __init__(self, flow_step, levels, num_steps, in_channels, factors, hidden_channels,
                  h_channels=0, inverse=False, transform='affine', prior_transform='affine',
                  alpha=1.0, kernel_size=None, coupling_type='conv', h_type=None,
-                 activation='relu', normalize=None, num_groups=None):
+                 activation='relu', normalize=None, num_groups=None, mask_pos=None, conv1x1_type='conv1x1'):
         super(MultiScaleArchitecture, self).__init__(inverse)
         assert levels > 1, 'Multi-scale architecture should have at least 2 levels.'
         assert levels == len(num_steps)
@@ -315,16 +304,21 @@ class MultiScaleArchitecture(Flow):
         self.internals = levels - 2
         self.squeeze_h = h_type is not None and h_type.startswith('local')
 
+        # mask_pos should be len three
+        
         for level in range(levels):
             hidden_channel = hidden_channels[level]
             n_groups = num_groups[level] if normalize == 'group_norm' else None
             if level == 0:
                 # bottom
+                if mask_pos:
+                    assert len(mask_pos) == 2, 'the format of mask_pos in MultiScaleArchitecture is wrong'
+
                 block = MultiScaleExternal(flow_step, num_steps[level], in_channels,
                                            hidden_channels=hidden_channel, h_channels=h_channels,
                                            transform=transform, alpha=alpha, inverse=inverse,
                                            kernel_size=kernel_size, coupling_type=coupling_type, h_type=h_type,
-                                           activation=activation, normalize=normalize, num_groups=n_groups, is_bottom=True)
+                                           activation=activation, normalize=normalize, num_groups=n_groups, mask_pos=mask_pos, conv1x1_type=conv1x1_type)
                 blocks.append(block)
             elif level == levels - 1:
                 # top
@@ -335,7 +329,7 @@ class MultiScaleArchitecture(Flow):
                                            hidden_channels=hidden_channel, h_channels=h_channels,
                                            transform=transform, alpha=alpha, inverse=inverse,
                                            kernel_size=kernel_size, coupling_type=coupling_type, h_type=h_type,
-                                           activation=activation, normalize=normalize, num_groups=n_groups)
+                                           activation=activation, normalize=normalize, num_groups=n_groups, conv1x1_type=conv1x1_type)
                 blocks.append(block)
             else:
                 # internal
@@ -347,7 +341,7 @@ class MultiScaleArchitecture(Flow):
                                            factor=factors[level], inverse=inverse, kernel_size=kernel_size,
                                            transform=transform, prior_transform=prior_transform,
                                            alpha=alpha, coupling_type=coupling_type, h_type=h_type,
-                                           activation=activation, normalize=normalize, num_groups=n_groups)
+                                           activation=activation, normalize=normalize, num_groups=n_groups, conv1x1_type=conv1x1_type)
                 blocks.append(block)
                 in_channels = block.z_channels
         self.blocks = nn.ModuleList(blocks)

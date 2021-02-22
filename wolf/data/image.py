@@ -121,7 +121,7 @@ def load_imagenet(data_path, image_size):
 
 def load_brats(data_path, image_size):
     train_data = BratsDataSet(data_path=data_path, image_size=image_size, split='train')
-    valid_data = BratsDataSet(data_path, image_size, split='valid')
+    valid_data = BratsDataSet(data_path=data_path, image_size=image_size, split='valid')
 
     return train_data, valid_data
 

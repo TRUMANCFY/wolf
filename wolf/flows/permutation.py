@@ -11,6 +11,92 @@ from torch.nn import Parameter
 from wolf.flows.flow import Flow
 
 
+class CondConv1x1Flow(Flow):
+    def __init__(self, in_channels, h_channels, inverse=False):
+        super(CondConv1x1Flow, self).__init__(inverse)
+        self.in_channels = in_channels
+        self.scale_proj = nn.Linear(h_channels, in_channels)
+        self.shift_proj = nn.Linear(h_channels, in_channels)
+        self.weight = Parameter(torch.Tensor(in_channels, in_channels))
+        self.register_buffer('weight_inv', self.weight.data.clone())
+        self.reset_parameters()
+
+    def reset_parameters(self):
+        nn.init.orthogonal_(self.weight)
+        self.sync()
+    
+    def sync(self):
+        self.weight_inv.copy_(self.weight.data.inverse())
+    
+    def get_weight(self, h, batch_size):
+        scale_vec = self.scale_proj(h)
+        shift_vec = self.shift_proj(h)
+
+        # scale_vec_norm = torch.norm(scale_vec)
+        # shift_vec_norm = torch.norm(shift_vec)
+
+        scale_vec = torch.tanh(scale_vec).div(self.in_channels)
+        shift_vec = torch.tanh(shift_vec).div(self.in_channels)
+
+        scale_vec = 1 + scale_vec.view(batch_size, self.in_channels, 1)
+        shift_vec = shift_vec.view(batch_size, 1, self.in_channels)
+
+        weight = self.weight.repeat(batch_size, 1, 1)
+        weight = weight * scale_vec + shift_vec
+
+        return weight
+
+    @overrides
+    def forward(self, input, h):
+        # [batch_size, in_channel, H, W]
+        batch_size, channels, H, W = input.size()
+        assert channels == self.in_channels, 'The input channel does not match!'
+        assert h is not None, 'Please use Conv1x1Flow, instead of CondConv1x1Flow'
+        
+        weight = self.get_weight(h, batch_size)
+        weight = weight.view(batch_size * self.in_channels, self.in_channels, 1, 1)
+
+        input = input.contiguous().view(1, batch_size * self.in_channels, H, W)
+
+        out = F.conv2d(input, weight, groups=batch_size, stride=1, bias=None)
+        _, logdet = torch.slogdet(weight)
+
+        out = out.view(batch_size, self.in_channels, H, W)
+        # print('condconv1x1 forward')
+
+        return out, logdet.mean().mul(H * W)
+
+    @overrides
+    def backward(self, input, h):
+        batch_size, channels, H, W = input.size()
+
+        weight = self.get_weight(h, batch_size)
+        weight_inv = torch.inverse(weight)
+        weight_inv = weight_inv.view(batch_size * self.in_channels, self.in_channels, 1, 1)
+        
+        input = input.contiguous().view(batch_size * self.in_channels, H, W)
+
+        out = F.conv2d(input, weight_inv, groups=batch_size, stride=1, bias=None)
+        _, logdet = torch.slogdet(weight_inv)
+        out = out.view(batch_size, self.in_channels, H, W)
+
+        return out, logdet.mean().mul(H * W)
+
+
+    @overrides
+    def init(self, data, h, init_scale=1.0) -> Tuple[torch.Tensor, torch.Tensor]:
+        with torch.no_grad():
+            return self.forward(data, h)
+
+    @overrides
+    def extra_repr(self):
+        return 'inverse={}, in_channels={}'.format(self.inverse, self.in_channels)
+
+    @classmethod
+    def from_params(cls, params: Dict) -> "CondConv1x1Flow":
+        return CondConv1x1Flow(**params)
+
+
 class Conv1x1Flow(Flow):
     def __init__(self, in_channels, inverse=False):
         super(Conv1x1Flow, self).__init__(inverse)
@@ -266,3 +352,4 @@ class InvertibleMultiHeadFlow(Flow):
 InvertibleLinearFlow.register('invertible_linear')
 InvertibleMultiHeadFlow.register('invertible_multihead')
 Conv1x1Flow.register('conv1x1')
+CondConv1x1Flow.register('cond_conv1x1')

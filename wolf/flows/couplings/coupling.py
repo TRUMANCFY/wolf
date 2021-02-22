@@ -4,7 +4,7 @@ from overrides import overrides
 from typing import Tuple, Dict
 import torch
 
-from wolf.flows.couplings.blocks import NICEConvBlock, MCFBlock, NICEMLPBlock
+from wolf.flows.couplings.blocks import NICEConvBlock, MCFBlock, NICEMLPBlock, NICECondConvBlock
 from wolf.flows.couplings.blocks import LocalLinearCondNet, GlobalLinearCondNet, GlobalAttnCondNet, GlobalAttnCondUnit, GlobalAttnMask
 from wolf.flows.flow import Flow
 from wolf.flows.couplings.transform import Additive, Affine, NLSQ, ReLU, SymmELU
@@ -226,13 +226,15 @@ class NICE2d(Flow):
         else:
             raise ValueError('unknown transform: {}'.format(transform))
 
-        assert type in ['conv']
-        if type == 'conv':
-            # print('coupling in_channels: ', in_channels)
-            # print('coupling out_channels: ', out_channels)
-            # print('coupling factor: ', factor)
+        assert type in ['conv', 'cond_conv']
+        if type == 'cond_conv':
+            self.net = NICECondConvBlock(in_channels, out_channels, hidden_channels, h_channels, activation,
+                                     normalize=normalize, num_groups=num_groups, h_type=h_type)
+        elif type == 'conv':
             self.net = NICEConvBlock(in_channels, out_channels, hidden_channels, activation,
                                      normalize=normalize, num_groups=num_groups, h_type=h_type)
+
+        self.type = type
 
         assert h_type in [None, 'local_linear', 'global_linear', 'global_attn', 'global_mask']
         if h_type is None:
@@ -281,38 +283,33 @@ class NICE2d(Flow):
         else:
             raise ValueError('unknown split type: {}'.format(split_type))
 
-    def calc_params(self, z: torch.Tensor, h=None):
-        params = self.net(z, h=h)
+    def calc_params(self, z: torch.Tensor, origin_h=None, h=None):
+        if self.type == 'conv':
+            params = self.net(z, h=h)
+        else:
+            params = self.net(z, origin_h=origin_h, h=h)
         return params
 
-    def init_net(self, z: torch.Tensor, h=None, init_scale=1.0):
-        params = self.net.init(z, h=h, init_scale=init_scale)
+    def init_net(self, z: torch.Tensor, origin_h=None, h=None, init_scale=1.0):
+        if self.type == 'conv':
+            params = self.net.init(z, h=h, init_scale=init_scale)
+        else:
+            params = self.net.init(z, h=h, init_scale=init_scale)
         return params
 
     @overrides
     def forward(self, input: torch.Tensor, h=None) -> Tuple[torch.Tensor, torch.Tensor]:
-        """
-        Args:
-            input: Tensor
-                input tensor [batch, in_channels, H, W]
-            h: Tensor
-                conditional input (default: None)
-
-        Returns: out: Tensor , logdet: Tensor
-            out: [batch, in_channels, H, W], the output of the flow
-            logdet: [batch], the log determinant of :math:`\partial output / \partial input`
-        """
         # [batch, length, in_channels]
         z1, z2 = self.split(input)
         # [batch, length, features]
         z, zp = (z1, z2) if self.up else (z2, z1)
 
         if self.h_net is not None:
-            h = self.h_net(h, x=z)
+            update_h = self.h_net(h, x=z)
         else:
-            h = None
+            update_h = None
         
-        params = self.transform.calc_params(self.calc_params(z, h=h))
+        params = self.transform.calc_params(self.calc_params(z, origin_h=h, h=update_h))
         
         zp, logdet = self.transform.fwd(zp, params)
 
@@ -340,10 +337,7 @@ class NICE2d(Flow):
         attn_weights = None
 
         if self.h_net is not None:
-            if self.h_type == 'global_attn':
-                h = self.h_net.forward_attn(h, x=z)
-            else:
-                h = self.h_net(h, x=z)
+            h = self.h_net(h, x=z)
         else:
             h = None
 
@@ -352,10 +346,10 @@ class NICE2d(Flow):
 
         z1, z2 = (z, zp) if self.up else (zp, z)
         
-        if self.h_type == 'global_attn':
+        if self.h_type == 'global_mask':
             return self.unsplit(z1, z2), logdet, h
-        else:
-            return self.unsplit(z1, z2), logdet, None
+        
+        return self.unsplit(z1, z2), logdet, None
 
     @overrides
     def backward(self, input: torch.Tensor, h=None) -> Tuple[torch.Tensor, torch.Tensor]:
@@ -382,10 +376,7 @@ class NICE2d(Flow):
         z, zp = (z1, z2) if self.up else (z2, z1)
 
         if self.h_net is not None:
-            if self.h_type == 'global_attn':
-                h = self.h_net.forward_attn(h, x=z)
-            else:
-                h = self.h_net(h, x=z)
+            h = self.h_net(h, x=z)
         else:
             h = None
 
@@ -393,7 +384,11 @@ class NICE2d(Flow):
         zp, logdet = self.transform.bwd(zp, params)
 
         z1, z2 = (z, zp) if self.up else (zp, z)
-        return self.unsplit(z1, z2), logdet, h
+        
+        if self.h_type == 'global_mask':
+            return self.unsplit(z1, z2), logdet, h
+        
+        return self.unsplit(z1, z2), logdet, None
 
     def backward_analytic(self, z: torch.Tensor, h=None) -> Tuple[torch.Tensor, torch.Tensor]:
         # [batch, length, in_channels]
@@ -402,11 +397,11 @@ class NICE2d(Flow):
         z, zp = (z1, z2) if self.up else (z2, z1)
 
         if self.h_net is not None:
-            h = self.h_net(h, x=z)
+            update_h = self.h_net(h, x=z)
         else:
-            h = None
+            update_h = None
 
-        params = self.transform.calc_params(self.calc_params(z, h=h))
+        params = self.transform.calc_params(self.calc_params(z, origin_h=h, h=update_h))
         zp, logdet = self.transform.bwd(zp, params)
 
         z1, z2 = (z, zp) if self.up else (zp, z)
