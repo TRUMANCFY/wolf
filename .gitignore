@@ -126,3 +126,4 @@ venv.bak/
 *_model/
 BraTS/
 cifar_mask/
+CUB_200_2011/
