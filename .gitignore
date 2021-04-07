@@ -123,7 +123,8 @@ venv.bak/
 
 # model and data
 *_data/
-*_model/
+*_model/*.gz
+*_model/*-py
 BraTS/
 cifar_mask/
 CUB_200_2011/
