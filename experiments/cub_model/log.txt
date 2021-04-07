@@ -1,0 +1,5 @@
+Rank -1: random seed=65537
+Rank -1: Namespace(amsgrad=False, batch_size=6, batch_steps=1, beta1=0.9, beta2=0.999, category=None, cfg_file='cfg/DAMSM/bird.yml', checkpoint_name='cub_model/checkpoint', config='configs/cub/glow/glow-base-uni.json', cuda=True, data_path='data/birds', dataset='cub', epochs=100, eps=1e-08, eval_batch_size=100, grad_clip=0.0, image_size=128, init_batch_size=100, local_rank=0, log=<_io.TextIOWrapper name='cub_model/log.txt' mode='w' encoding='UTF-8'>, log_interval=10, lr=0.001, lr_decay=0.999997, model_path='cub_model', n_bins=256.0, n_bits=8, nx=49152, rank=-1, recover=-1, result_path='cub_model/images', seed=65537, test_k=5, train_k=1, valid_epochs=10, warmup_steps=50, weight_decay=1e-06, workers=4, world_size=1)
+# of Parameters: 36849643
+Rank -1, init model: 100 instances
+Epoch: 1 (lr=0.000000, betas=(0.9, 0.999), eps=1.0e-08, amsgrad=False, lr decay=0.999997, clip=0.0, l2=1.0e-06, train_k=1)

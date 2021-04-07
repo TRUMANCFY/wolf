@@ -27,6 +27,8 @@ from wolf.optim import ExponentialScheduler
 
 from experiments.options import parse_args
 
+from miscc.config import cfg, cfg_from_file
+
 
 def is_master(rank):
     return rank <= 0
@@ -50,7 +52,7 @@ def get_optimizer(learning_rate, parameters, betas, eps, amsgrad, step_decay, we
     return optimizer, scheduler
 
 
-def setup(args):
+def setup(args, cfg):
     def check_dataset():
         if dataset == 'cifar10':
             assert image_size == 32, 'CIFAR-10 expected image size 32 but got {}'.format(image_size)
@@ -61,6 +63,8 @@ def setup(args):
         elif dataset == 'celeba-hair':
             assert image_size in [256, 512]
         elif dataset == 'imagenet':
+            assert image_size in [64, 128, 256]
+        elif dataset == 'cub':
             assert image_size in [64, 128, 256]
 
     dataset = args.dataset
@@ -112,7 +116,7 @@ def setup(args):
     args.world_size = int(os.environ["WORLD_SIZE"]) if is_distributed(args.rank) else 1
     logging("Rank {}: ".format(args.rank) + str(args), args.log)
 
-    train_data, val_data = load_datasets(dataset, image_size, data_path=data_path)
+    train_data, val_data = load_datasets(dataset, cfg, image_size, data_path=data_path)
     train_index = np.arange(len(train_data))
     np.random.shuffle(train_index)
     val_index = np.arange(len(val_data))
@@ -125,7 +129,10 @@ def setup(args):
     else:
         params = json.load(open(args.config, 'r'))
         json.dump(params, open(os.path.join(model_path, 'config.json'), 'w'), indent=2)
-
+    try:
+        cfg.TEXT.NTOKEN = train_data.n_words
+    except:
+        print('No n_words')
     wolf = WolfModel.from_params(params)
     wolf.to_device(device)
     args.device = device
@@ -319,6 +326,7 @@ def train(args, train_loader, train_index, train_sampler, val_loader, val_data, 
             torch.cuda.empty_cache()
         gc.collect()
         for step, (data, y) in enumerate(train_loader):
+            print('data: ', data)
             if step <= last_step:
                 continue
             last_step = -1
@@ -336,10 +344,10 @@ def train(args, train_loader, train_index, train_sampler, val_loader, val_data, 
             if is_distributed(args.rank):
                 wolf.disable_allreduce()
             cnt = 0
-            for data, y in zip (data_list[:-1], y_list[:-1]):
-                # print('++')
+            for data, y in zip(data_list[:-1], y_list[:-1]):
                 loss_gen, loss_kl, loss_dequant = wolf.loss(data, y=y, n_bits=n_bits, nsamples=train_k)
-                # print('--')
+                print('loss gen: ', loss_gen)
+                print('loss dequant: ', loss_dequant)
                 loss_gen = loss_gen.sum()
                 loss_kl = loss_kl.sum()
                 loss_dequant = loss_dequant.sum()
@@ -497,7 +505,7 @@ def train(args, train_loader, train_index, train_sampler, val_loader, val_data, 
 
 
 def main(args):
-    args, (train_data, val_data), (train_index, val_index), wolf = setup(args)
+    args, (train_data, val_data), (train_index, val_index), wolf = setup(args, cfg)
 
     if is_master(args.rank):
         logging('# of Parameters: %d' % sum([param.numel() for param in wolf.parameters()]), args.log)
@@ -515,5 +523,9 @@ def main(args):
 
 if __name__ == "__main__":
     args = parse_args()
+
+    if args.cfg_file is not None:
+        cfg_from_file(args.cfg_file)
+
     assert args.rank == -1 and args.local_rank == 0, 'single process should have wrong rank ({}) or local rank ({})'.format(args.rank, args.local_rank)
     main(args)

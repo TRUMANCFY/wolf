@@ -7,8 +7,6 @@
       "factors": [4, 4],
       "in_channels": 3,
       "hidden_channels": [24, 512, 512, 512],
-      "h_channels": 32,
-      "h_type": "global_linear",
       "activation": "elu",
       "inverse": true,
       "transform": "affine",

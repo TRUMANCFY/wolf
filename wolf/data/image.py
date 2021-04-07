@@ -11,9 +11,9 @@ from zipfile import ZipFile
 import random
 from .celeba_dataset import CelebaDataset, CelebaHairDataset
 from .brats import BratsDataSet
+from .cub import TextDataset
 
-
-def load_datasets(dataset, image_size, data_path):
+def load_datasets(dataset, cfg, image_size, data_path):
     if dataset == 'omniglot':
         return load_omniglot()
     elif dataset == 'mnist':
@@ -31,9 +31,16 @@ def load_datasets(dataset, image_size, data_path):
         return load_celeba_hair(data_path, image_size)
     elif dataset == 'brats':
         return load_brats(data_path, image_size)
+    elif dataset == 'cub':
+        return load_cub(cfg, image_size, data_path)
     else:
         raise ValueError('unknown data set %s' % dataset)
 
+
+def load_cub(cfg, image_size, data_path):
+    train_data = TextDataset(data_dir=data_path, cfg=cfg, imsize=image_size, split='train')
+    valid_data = TextDataset(data_dir=data_path, cfg=cfg, imsize=image_size, split='test')
+    return train_data, valid_data
 
 def load_omniglot():
     def reshape_data(data):

@@ -29,9 +29,9 @@ class WolfCore(nn.Module):
         self.discriminator.sync()
 
     def init(self, x, y=None, init_scale=1.0):
-        z = self.discriminator.init(x, y=y, init_scale=init_scale)[0]
+        # z = self.discriminator.init(x, y=y, init_scale=init_scale)[0]
         self.dequantizer.init(x, init_scale=init_scale)
-        self.generator.init(x, h=z, init_scale=init_scale)
+        self.generator.init(x, h=None, init_scale=init_scale)
 
     def synthesize(self, nums, image_size, tau=1.0, n_bits=8, device=torch.device('cpu')):
         # [nsamples, imagesize]
@@ -100,10 +100,11 @@ class WolfCore(nn.Module):
         # [batch*nsamples, dim]
         z = z.view(-1, z.size(2)) if z is not None else z
         # [batch]
-        log_probs_gen = self.generator.log_probability(x, h=z).view(size[0], nsamples).mean(dim=1)
+        log_probs_gen = self.generator.log_probability(x, h=None).view(size[0], nsamples).mean(dim=1)
         loss_gen = log_probs_gen * -1.
         if kl is None:
             kl = loss_gen.new_zeros(loss_gen.size(0))
+        print('loss_gen', loss_gen)
         return loss_gen, kl, loss_dequant
 
     def forward_attn(self, data, y=None, n_bits=8, nsamples=1):
